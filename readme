@@ -1,0 +1,4 @@
+npm install @langchain/openai@latest @langchain/core@latest @langchain/google-genai@latest @langchain/classic langchain@latest dotenv@16.4.5 @langchain/community readline zod chalk
+
+npm install hnswlib-node --legacy-peer-deps
+
