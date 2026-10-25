@@ -2,7 +2,8 @@
  * @fileoverview rag.js - Production-ready Retrieval-Augmented Generation (RAG) Engine.
  * 
  * Provides end-to-end document loading, text chunking, vector indexing (HNSWLib/Memory),
- * semantic retrieval, and LLM-powered question answering with source attribution.
+ * semantic retrieval, and LLM-powered question answering with source attribution,
+ * structured logging, and typed error handling.
  * 
  * @module rag
  */
@@ -13,7 +14,6 @@ require('dotenv').config();
 
 const { ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings } = require('@langchain/google-genai');
 const { OpenAIEmbeddings } = require('@langchain/openai');
-const { StringOutputParser } = require('@langchain/core/output_parsers');
 const { ChatPromptTemplate } = require('@langchain/core/prompts');
 const { RecursiveCharacterTextSplitter } = require('@langchain/textsplitters');
 const { PDFLoader } = require('@langchain/community/document_loaders/fs/pdf');
@@ -26,11 +26,21 @@ const { createRetrievalChain } = require('@langchain/classic/chains/retrieval');
 
 const {
     getFileExtension,
-    isSupportedFileType,
     getSafeBasename,
-    ensureDirectoryExists,
-    getVectorStorePath
+    ensureDirectoryExists
 } = require('./morerag');
+
+const {
+    ValidationError,
+    DocumentNotFoundError,
+    UnsupportedFormatError,
+    EmptyDocumentError,
+    EmbeddingProviderError,
+    LLMProviderError,
+    VectorStoreError
+} = require('./lib/errors');
+
+const { logger } = require('./lib/logger');
 
 /**
  * Default configuration values for the RAG pipeline.
@@ -86,17 +96,18 @@ class SimpleTextLoader {
  * 
  * @param {string} filePath - Path to document file.
  * @returns {PDFLoader|DocxLoader|SimpleTextLoader} Initialized document loader instance.
- * @throws {TypeError} If filePath is invalid.
- * @throws {Error} If file extension is unsupported or file does not exist.
+ * @throws {ValidationError} If filePath is invalid.
+ * @throws {DocumentNotFoundError} If file does not exist.
+ * @throws {UnsupportedFormatError} If file extension is unsupported.
  */
 function getLoaderForDocument(filePath) {
     if (!filePath || typeof filePath !== 'string') {
-        throw new TypeError('Document path must be a non-empty string.');
+        throw new ValidationError('Document path must be a non-empty string.', { filePath });
     }
 
     const resolvedPath = path.resolve(filePath);
     if (!fs.existsSync(resolvedPath)) {
-        throw new Error(`Document file not found at path: "${resolvedPath}"`);
+        throw new DocumentNotFoundError(resolvedPath);
     }
 
     const ext = getFileExtension(resolvedPath);
@@ -109,9 +120,7 @@ function getLoaderForDocument(filePath) {
         case 'md':
             return new SimpleTextLoader(resolvedPath);
         default:
-            throw new Error(
-                `Unsupported document format: ".${ext}". Supported formats are: .pdf, .docx, .txt, .md`
-            );
+            throw new UnsupportedFormatError(ext);
     }
 }
 
@@ -124,6 +133,7 @@ function getLoaderForDocument(filePath) {
  * @param {number} [options.chunkOverlap=200] - Character overlap between consecutive chunks.
  * @param {Object} [options.loader] - Optional custom loader instance for dependency injection.
  * @returns {Promise<Array<import('@langchain/core/documents').Document>>} Array of split Document chunks.
+ * @throws {EmptyDocumentError} If no content could be extracted.
  */
 async function loadAndSplitDocument(docPath, options = {}) {
     const chunkSize = options.chunkSize || DEFAULT_CONFIG.chunkSize;
@@ -133,7 +143,7 @@ async function loadAndSplitDocument(docPath, options = {}) {
     const rawDocs = await loader.load();
 
     if (!rawDocs || rawDocs.length === 0) {
-        throw new Error(`No content could be extracted from document: "${docPath}"`);
+        throw new EmptyDocumentError(docPath);
     }
 
     const splitter = new RecursiveCharacterTextSplitter({
@@ -151,6 +161,7 @@ async function loadAndSplitDocument(docPath, options = {}) {
  * @param {Object} [options.embeddings] - Custom embeddings instance (e.g. for testing).
  * @param {'openai'|'google'} [options.provider] - Explicit embeddings provider choice.
  * @returns {OpenAIEmbeddings|GoogleGenerativeAIEmbeddings} Configured embeddings instance.
+ * @throws {EmbeddingProviderError} If credentials or provider are invalid.
  */
 function getEmbeddings(options = {}) {
     if (options.embeddings) {
@@ -161,7 +172,10 @@ function getEmbeddings(options = {}) {
 
     if (provider === 'openai') {
         if (!process.env.OPENAI_API_KEY) {
-            throw new Error('OPENAI_API_KEY environment variable is required when using OpenAI embeddings.');
+            throw new EmbeddingProviderError(
+                'OPENAI_API_KEY environment variable is required when using OpenAI embeddings.',
+                'openai'
+            );
         }
         return new OpenAIEmbeddings({
             modelName: options.modelName || 'text-embedding-3-small'
@@ -170,14 +184,20 @@ function getEmbeddings(options = {}) {
 
     if (provider === 'google') {
         if (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_API_KEY) {
-            throw new Error('GEMINI_API_KEY or GOOGLE_API_KEY environment variable is required for Google GenAI embeddings.');
+            throw new EmbeddingProviderError(
+                'GEMINI_API_KEY or GOOGLE_API_KEY environment variable is required for Google GenAI embeddings.',
+                'google'
+            );
         }
         return new GoogleGenerativeAIEmbeddings({
             model: options.modelName || 'text-embedding-004'
         });
     }
 
-    throw new Error(`Unsupported embeddings provider: "${provider}". Use 'openai' or 'google'.`);
+    throw new EmbeddingProviderError(
+        `Unsupported embeddings provider: "${provider}". Use 'openai' or 'google'.`,
+        provider
+    );
 }
 
 /**
@@ -189,6 +209,7 @@ function getEmbeddings(options = {}) {
  * @param {number} [options.temperature] - Sampling temperature (0.0 - 1.0).
  * @param {number} [options.maxTokens] - Maximum tokens for generation.
  * @returns {ChatGoogleGenerativeAI} Configured Chat LLM instance.
+ * @throws {LLMProviderError} If API key is missing.
  */
 function getLlm(options = {}) {
     if (options.llm) {
@@ -196,7 +217,10 @@ function getLlm(options = {}) {
     }
 
     if (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_API_KEY) {
-        throw new Error('GEMINI_API_KEY or GOOGLE_API_KEY environment variable is required for ChatGoogleGenerativeAI.');
+        throw new LLMProviderError(
+            'GEMINI_API_KEY or GOOGLE_API_KEY environment variable is required for ChatGoogleGenerativeAI.',
+            options.modelName || DEFAULT_CONFIG.modelName
+        );
     }
 
     return new ChatGoogleGenerativeAI({
@@ -232,6 +256,7 @@ function isVectorStoreCached(indexPath) {
  * @param {string} [options.indexPath] - Target disk directory for index.
  * @param {boolean} [options.inMemory=false] - Force in-memory vector store without disk persistence.
  * @returns {Promise<HNSWLib|MemoryVectorStore>} Vector store instance.
+ * @throws {VectorStoreError} If indexPath is missing for persistent mode.
  */
 async function getOrCreateVectorStore(splitDocs, embeddings, options = {}) {
     if (options.inMemory) {
@@ -240,7 +265,7 @@ async function getOrCreateVectorStore(splitDocs, embeddings, options = {}) {
 
     const indexPath = options.indexPath;
     if (!indexPath) {
-        throw new Error('indexPath is required for persistent vector stores.');
+        throw new VectorStoreError('indexPath is required for persistent vector stores.');
     }
 
     if (isVectorStoreCached(indexPath)) {
@@ -291,6 +316,8 @@ async function createRagChain({ llm, vectorStore, k = DEFAULT_CONFIG.k, promptTe
  * @param {boolean} [options.inMemory=false] - Use in-memory vector store instead of disk.
  * @param {boolean} [options.verbose=false] - Enable debug logging and timing.
  * @returns {Promise<{answer: string, context: Array<Object>, executionTimeMs: number, sourceDoc: string}>}
+ * @throws {ValidationError} If docPath is invalid.
+ * @throws {DocumentNotFoundError} If document cannot be found.
  * 
  * @example
  * const result = await documentRag('files/manual.pdf', 'How do I reset password?');
@@ -298,14 +325,14 @@ async function createRagChain({ llm, vectorStore, k = DEFAULT_CONFIG.k, promptTe
  */
 async function documentRag(docPath, query = 'Compare B-Trees and LSM Trees according to the book.', options = {}) {
     if (!docPath || typeof docPath !== 'string') {
-        throw new TypeError('docPath must be a non-empty string.');
+        throw new ValidationError('docPath must be a non-empty string.', { docPath });
     }
 
     const startTime = Date.now();
     const resolvedDocPath = path.resolve(docPath);
 
     if (!fs.existsSync(resolvedDocPath)) {
-        throw new Error(`Target document not found at: "${resolvedDocPath}"`);
+        throw new DocumentNotFoundError(resolvedDocPath);
     }
 
     const baseDir = options.vectorBaseDir || DEFAULT_CONFIG.defaultVectorBaseDir;
@@ -317,13 +344,13 @@ async function documentRag(docPath, query = 'Compare B-Trees and LSM Trees accor
 
     let vectorStore;
     if (!options.inMemory && isVectorStoreCached(indexPath)) {
-        if (options.verbose) console.log(`[RAG] Loading cached vector index from: ${indexPath}`);
+        logger.debug('Loading cached vector index', { indexPath });
         vectorStore = await HNSWLib.load(indexPath, embeddings);
     } else {
-        if (options.verbose) console.log(`[RAG] Processing and chunking document: ${resolvedDocPath}`);
+        logger.debug('Processing and chunking document', { resolvedDocPath });
         const splitDocs = await loadAndSplitDocument(resolvedDocPath, options);
 
-        if (options.verbose) console.log(`[RAG] Indexing ${splitDocs.length} chunks...`);
+        logger.debug(`Indexing ${splitDocs.length} chunks`, { count: splitDocs.length, indexPath });
         vectorStore = await getOrCreateVectorStore(splitDocs, embeddings, {
             indexPath,
             inMemory: options.inMemory
@@ -342,6 +369,11 @@ async function documentRag(docPath, query = 'Compare B-Trees and LSM Trees accor
     });
 
     const executionTimeMs = Date.now() - startTime;
+    logger.info('RAG query completed successfully', {
+        docPath: resolvedDocPath,
+        retrievedChunks: response.context ? response.context.length : 0,
+        executionTimeMs
+    });
 
     return {
         answer: response.answer,
@@ -369,6 +401,12 @@ async function loadAndIndexDocument(docPath, options = {}) {
     const splitDocs = await loadAndSplitDocument(resolvedDocPath, options);
     await getOrCreateVectorStore(splitDocs, embeddings, { indexPath });
 
+    logger.info('Document indexed successfully', {
+        docPath: resolvedDocPath,
+        indexPath,
+        chunkCount: splitDocs.length
+    });
+
     return {
         indexPath,
         chunkCount: splitDocs.length
@@ -385,29 +423,33 @@ if (require.main === module) {
             const targetDoc = process.argv[2] || path.join(__dirname, 'files', 'Designing_Data-Intensive_Applications_TH.pdf');
             const targetQuery = process.argv[3] || 'Compare B-Trees and LSM Trees according to the book.';
 
-            console.log('=== Document RAG Execution ===');
-            console.log(`Document : ${targetDoc}`);
-            console.log(`Query    : ${targetQuery}\n`);
+            logger.info('=== Document RAG Execution ===', {
+                targetDoc,
+                targetQuery
+            });
 
             if (!fs.existsSync(targetDoc)) {
-                console.error(`Error: File not found at path "${targetDoc}".`);
-                console.log('Usage: node rag.js <path-to-document> [question]');
+                logger.error(`Error: File not found at path "${targetDoc}".`);
+                process.stdout.write('Usage: node rag.js <path-to-document> [question]\n');
                 process.exit(1);
             }
 
             if (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_API_KEY) {
-                console.warn('Warning: GEMINI_API_KEY or GOOGLE_API_KEY not found in environment.');
+                logger.warn('Warning: GEMINI_API_KEY or GOOGLE_API_KEY not found in environment.');
             }
             if (!process.env.OPENAI_API_KEY) {
-                console.warn('Warning: OPENAI_API_KEY not found in environment (required if using OpenAI embeddings).');
+                logger.warn('Warning: OPENAI_API_KEY not found in environment (required if using OpenAI embeddings).');
             }
 
             const result = await documentRag(targetDoc, targetQuery, { verbose: true });
-            console.log('\n--- Answer ---');
-            console.log(result.answer);
-            console.log(`\nCompleted in ${result.executionTimeMs}ms (retrieved ${result.context.length} context chunks).`);
+            process.stdout.write('\n--- Answer ---\n');
+            process.stdout.write(`${result.answer}\n`);
+            process.stdout.write(`\nCompleted in ${result.executionTimeMs}ms (retrieved ${result.context.length} context chunks).\n`);
         } catch (err) {
-            console.error('\nExecution failed:', err.message);
+            logger.error('Execution failed', {
+                errorCode: err.code || 'UNKNOWN_ERROR',
+                message: err.message
+            });
             process.exit(1);
         }
     })();

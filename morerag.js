@@ -2,13 +2,15 @@
  * @fileoverview morerag.js - Document Path Utilities and Multi-Document RAG Operations.
  * 
  * Provides robust file system utilities, document format detection, directory ingestion,
- * and multi-document retrieval-augmented generation (RAG) capabilities.
+ * structured logging, and multi-document retrieval-augmented generation (RAG) capabilities.
  * 
  * @module morerag
  */
 
 const path = require('path');
 const fs = require('fs');
+const { ValidationError } = require('./lib/errors');
+const { logger } = require('./lib/logger');
 
 /**
  * Supported document file extensions for ingestion and vector indexing.
@@ -80,15 +82,16 @@ function getSafeBasename(filePath) {
  * 
  * @param {string} dirPath - Directory path to verify or create.
  * @returns {string} The resolved absolute path of the created/verified directory.
- * @throws {Error} If directory creation fails.
+ * @throws {ValidationError} If directory path is invalid.
  */
 function ensureDirectoryExists(dirPath) {
     if (!dirPath || typeof dirPath !== 'string') {
-        throw new TypeError('Directory path must be a non-empty string.');
+        throw new ValidationError('Directory path must be a non-empty string.', { dirPath });
     }
     const resolvedPath = path.resolve(dirPath);
     if (!fs.existsSync(resolvedPath)) {
         fs.mkdirSync(resolvedPath, { recursive: true });
+        logger.debug('Created directory structure', { path: resolvedPath });
     }
     return resolvedPath;
 }
@@ -99,6 +102,7 @@ function ensureDirectoryExists(dirPath) {
  * @param {string} docPath - Path to the document.
  * @param {string} [baseDir='./vector/vector-db'] - Base directory for vector stores.
  * @returns {string} Resolved directory path for the document's vector index.
+ * @throws {ValidationError} If document path is invalid.
  * 
  * @example
  * getVectorStorePath('files/book.pdf'); // './vector/vector-db/book'
@@ -106,7 +110,7 @@ function ensureDirectoryExists(dirPath) {
 function getVectorStorePath(docPath, baseDir = './vector/vector-db') {
     const baseName = getSafeBasename(docPath);
     if (!baseName) {
-        throw new Error(`Cannot compute vector store path from invalid document path: "${docPath}"`);
+        throw new ValidationError(`Cannot compute vector store path from invalid document path: "${docPath}"`, { docPath });
     }
     return path.join(baseDir, baseName);
 }
@@ -153,13 +157,14 @@ function listSupportedDocuments(dirPath, options = {}) {
  * @param {Function} [params.ragFunction] - Single document RAG function (injected from rag.js).
  * @param {Object} [params.options] - Additional options forwarded to ragFunction.
  * @returns {Promise<Array<{docPath: string, answer: string, success: boolean, error?: string}>>}
+ * @throws {ValidationError} If docPaths or query is invalid.
  */
 async function queryMultipleDocuments({ docPaths, query, ragFunction, options = {} }) {
     if (!Array.isArray(docPaths) || docPaths.length === 0) {
-        throw new Error('docPaths must be a non-empty array of file paths.');
+        throw new ValidationError('docPaths must be a non-empty array of file paths.', { docPaths });
     }
     if (!query || typeof query !== 'string') {
-        throw new Error('query must be a non-empty string.');
+        throw new ValidationError('query must be a non-empty string.', { query });
     }
 
     const fn = ragFunction || require('./rag').documentRag;
@@ -175,11 +180,17 @@ async function queryMultipleDocuments({ docPaths, query, ragFunction, options = 
                 rawResponse: resp
             });
         } catch (err) {
+            logger.warn('Failed querying document in multi-document batch', {
+                docPath,
+                errorCode: err.code || 'UNKNOWN_ERROR',
+                error: err.message
+            });
             results.push({
                 docPath,
                 answer: null,
                 success: false,
-                error: err.message
+                error: err.message,
+                errorCode: err.code || 'UNKNOWN_ERROR'
             });
         }
     }
@@ -194,10 +205,11 @@ async function queryMultipleDocuments({ docPaths, query, ragFunction, options = 
  * @param {Object} [options={}] - Options passed to indexer.
  * @param {Function} [options.indexerFunction] - Injected vector store creator.
  * @returns {Promise<Array<{docPath: string, indexed: boolean, vectorPath: string, error?: string}>>}
+ * @throws {ValidationError} If docPaths is not an array.
  */
 async function batchIndexDocuments(docPaths, options = {}) {
     if (!Array.isArray(docPaths)) {
-        throw new TypeError('docPaths must be an array.');
+        throw new ValidationError('docPaths must be an array.', { docPaths });
     }
 
     const { indexerFunction } = options;
@@ -213,7 +225,12 @@ async function batchIndexDocuments(docPaths, options = {}) {
             await indexer(docPath);
             results.push({ docPath, indexed: true, vectorPath });
         } catch (err) {
-            results.push({ docPath, indexed: false, vectorPath, error: err.message });
+            logger.warn('Failed indexing document in batch', {
+                docPath,
+                errorCode: err.code || 'UNKNOWN_ERROR',
+                error: err.message
+            });
+            results.push({ docPath, indexed: false, vectorPath, error: err.message, errorCode: err.code || 'UNKNOWN_ERROR' });
         }
     }
     return results;
@@ -224,33 +241,34 @@ async function batchIndexDocuments(docPaths, options = {}) {
 // Preserves and upgrades original scratchpad checks
 // ==========================================
 if (require.main === module) {
-    console.log('=== MoreRAG Diagnostic & Utility Inspection ===\n');
+    logger.info('=== MoreRAG Diagnostic & Utility Inspection ===');
 
     const sampleDocx = 'files/how_to_create_pdf_Gresham_Norman_CV_Clean.docx';
     const samplePdf = 'files/Gresham_Norman_CV_Clean.pdf';
     const vectorDir = './vector/vector-db';
 
-    console.log(`Document 1: "${sampleDocx}"`);
-    console.log(` - Detected Extension: "${getFileExtension(sampleDocx)}"`);
-    console.log(` - Is Supported Document: ${isSupportedFileType(sampleDocx)}`);
-    console.log(` - Safe Basename: "${getSafeBasename(sampleDocx)}"`);
-    console.log(` - Vector DB Destination: "${getVectorStorePath(sampleDocx)}"`);
+    logger.info(`Inspecting sample DOCX: ${sampleDocx}`, {
+        extension: getFileExtension(sampleDocx),
+        isSupported: isSupportedFileType(sampleDocx),
+        basename: getSafeBasename(sampleDocx),
+        vectorPath: getVectorStorePath(sampleDocx)
+    });
 
-    console.log(`\nDocument 2: "${samplePdf}"`);
-    console.log(` - Detected Extension: "${getFileExtension(samplePdf)}"`);
-    console.log(` - Is Supported Document: ${isSupportedFileType(samplePdf)}`);
-    console.log(` - Safe Basename: "${getSafeBasename(samplePdf)}"`);
-    console.log(` - Vector DB Destination: "${getVectorStorePath(samplePdf)}"`);
+    logger.info(`Inspecting sample PDF: ${samplePdf}`, {
+        extension: getFileExtension(samplePdf),
+        isSupported: isSupportedFileType(samplePdf),
+        basename: getSafeBasename(samplePdf),
+        vectorPath: getVectorStorePath(samplePdf)
+    });
 
     const dirExists = fs.existsSync(vectorDir);
-    console.log(`\nVector DB Base Directory ("${vectorDir}"): ${dirExists ? 'EXISTS' : 'NOT FOUND'}`);
+    logger.info(`Vector DB Base Directory ("${vectorDir}"): ${dirExists ? 'EXISTS' : 'NOT FOUND'}`);
 
     if (fs.existsSync('files')) {
         const found = listSupportedDocuments('files');
-        console.log(`\nAvailable documents in "files/":`);
-        found.forEach(f => console.log(` - ${f}`));
+        logger.info(`Available documents in "files/": ${found.length} detected`, { documents: found });
     }
-    console.log('\n=== Inspection Complete ===');
+    logger.info('=== Inspection Complete ===');
 }
 
 module.exports = {
