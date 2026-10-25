@@ -19,6 +19,8 @@ const {
     batchIndexDocuments
 } = require('../morerag');
 
+const { ValidationError } = require('../lib/errors');
+
 describe('morerag.js - File & Path Utilities', () => {
     describe('SUPPORTED_EXTENSIONS', () => {
         it('should include core document formats', () => {
@@ -123,9 +125,9 @@ describe('morerag.js - File & Path Utilities', () => {
             assert.doesNotThrow(() => ensureDirectoryExists(testDir));
         });
 
-        it('should throw TypeError on invalid directory path', () => {
-            assert.throws(() => ensureDirectoryExists(''), TypeError);
-            assert.throws(() => ensureDirectoryExists(null), TypeError);
+        it('should throw ValidationError on invalid directory path', () => {
+            assert.throws(() => ensureDirectoryExists(''), ValidationError);
+            assert.throws(() => ensureDirectoryExists(null), ValidationError);
         });
     });
 
@@ -227,7 +229,7 @@ describe('morerag.js - Multi-Document RAG Operations', () => {
 
     describe('batchIndexDocuments()', () => {
         it('should validate docPaths is an array', async () => {
-            await assert.rejects(() => batchIndexDocuments(null), TypeError);
+            await assert.rejects(() => batchIndexDocuments(null), ValidationError);
         });
 
         it('should process batch indexing using injected indexer', async () => {

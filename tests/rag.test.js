@@ -25,6 +25,16 @@ const {
     loadAndIndexDocument
 } = require('../rag');
 
+const {
+    ValidationError,
+    DocumentNotFoundError,
+    UnsupportedFormatError,
+    EmptyDocumentError,
+    EmbeddingProviderError,
+    LLMProviderError,
+    VectorStoreError
+} = require('../lib/errors');
+
 // Lightweight mock embeddings for fast, deterministic, offline testing
 class MockEmbeddings {
     async embedDocuments(documents) {
@@ -38,7 +48,7 @@ class MockEmbeddings {
 
 // Helper function to create a mock LangChain Runnable LLM
 function createMockChatModel(reply = 'Mocked technical response based on context.') {
-    return RunnableLambda.from(async (promptVal) => {
+    return RunnableLambda.from(async (_promptVal) => {
         return reply;
     });
 }
@@ -79,16 +89,21 @@ describe('rag.js - Document Loader Resolution', () => {
         }
     });
 
-    it('should throw TypeError for invalid docPath arguments', () => {
-        assert.throws(() => getLoaderForDocument(''), TypeError);
-        assert.throws(() => getLoaderForDocument(null), TypeError);
-        assert.throws(() => getLoaderForDocument(12345), TypeError);
+    it('should throw ValidationError for invalid docPath arguments', () => {
+        assert.throws(() => getLoaderForDocument(''), ValidationError);
+        assert.throws(() => getLoaderForDocument(null), ValidationError);
+        assert.throws(() => getLoaderForDocument(12345), ValidationError);
     });
 
-    it('should throw Error for nonexistent files', () => {
+    it('should throw DocumentNotFoundError for nonexistent files', () => {
+        const missingPath = path.join(tempDir, 'nonexistent.pdf');
         assert.throws(
-            () => getLoaderForDocument(path.join(tempDir, 'nonexistent.pdf')),
-            /Document file not found/
+            () => getLoaderForDocument(missingPath),
+            (err) => {
+                assert.ok(err instanceof DocumentNotFoundError);
+                assert.equal(err.code, 'DOCUMENT_NOT_FOUND');
+                return true;
+            }
         );
     });
 
@@ -115,17 +130,20 @@ describe('rag.js - Document Loader Resolution', () => {
         assert.ok(mdDocs[0].pageContent.includes('# Markdown Title'));
     });
 
-    it('should throw informative error for unsupported document types', () => {
+    it('should throw UnsupportedFormatError for unsupported document types', () => {
         assert.throws(
             () => getLoaderForDocument(invalidPath),
-            /Unsupported document format: "\.xyz"/
+            (err) => {
+                assert.ok(err instanceof UnsupportedFormatError);
+                assert.equal(err.code, 'UNSUPPORTED_FORMAT');
+                return true;
+            }
         );
     });
 });
 
 describe('rag.js - Text Splitting and Chunking', () => {
     it('should split loaded documents into chunks respecting size and overlap', async () => {
-        // Create a 2500 character document
         const longText = 'A'.repeat(1200) + ' ' + 'B'.repeat(1200);
         const mockLoader = {
             load: async () => [new Document({ pageContent: longText, metadata: { source: 'memory' } })]
@@ -141,14 +159,18 @@ describe('rag.js - Text Splitting and Chunking', () => {
         assert.ok(chunks[0].pageContent.length <= 500);
     });
 
-    it('should throw error when document yields empty content', async () => {
+    it('should throw EmptyDocumentError when document yields empty content', async () => {
         const emptyLoader = {
             load: async () => []
         };
 
         await assert.rejects(
             () => loadAndSplitDocument('empty.txt', { loader: emptyLoader }),
-            /No content could be extracted/
+            (err) => {
+                assert.ok(err instanceof EmptyDocumentError);
+                assert.equal(err.code, 'EMPTY_DOCUMENT');
+                return true;
+            }
         );
     });
 });
@@ -160,10 +182,37 @@ describe('rag.js - Embeddings and LLM Configuration', () => {
         assert.equal(resolved, mockEmb);
     });
 
+    it('getEmbeddings() should throw EmbeddingProviderError when OPENAI_API_KEY is missing', () => {
+        assert.throws(
+            () => getEmbeddings({ provider: 'openai' }),
+            (err) => {
+                assert.ok(err instanceof EmbeddingProviderError);
+                assert.equal(err.code, 'EMBEDDING_PROVIDER_ERROR');
+                assert.equal(err.details.provider, 'openai');
+                return true;
+            }
+        );
+    });
+
+    it('getEmbeddings() should throw EmbeddingProviderError when Google keys are missing', () => {
+        assert.throws(
+            () => getEmbeddings({ provider: 'google' }),
+            (err) => {
+                assert.ok(err instanceof EmbeddingProviderError);
+                assert.equal(err.code, 'EMBEDDING_PROVIDER_ERROR');
+                assert.equal(err.details.provider, 'google');
+                return true;
+            }
+        );
+    });
+
     it('getEmbeddings() should reject unsupported providers', () => {
         assert.throws(
             () => getEmbeddings({ provider: 'unsupported-provider' }),
-            /Unsupported embeddings provider/
+            (err) => {
+                assert.ok(err instanceof EmbeddingProviderError);
+                return true;
+            }
         );
     });
 
@@ -171,6 +220,17 @@ describe('rag.js - Embeddings and LLM Configuration', () => {
         const mockModel = createMockChatModel();
         const resolved = getLlm({ llm: mockModel });
         assert.equal(resolved, mockModel);
+    });
+
+    it('getLlm() should throw LLMProviderError when API keys are missing', () => {
+        assert.throws(
+            () => getLlm(),
+            (err) => {
+                assert.ok(err instanceof LLMProviderError);
+                assert.equal(err.code, 'LLM_PROVIDER_ERROR');
+                return true;
+            }
+        );
     });
 });
 
@@ -212,8 +272,53 @@ describe('rag.js - Vector Store Caching and Storage', () => {
         const docs = [new Document({ pageContent: 'chunk', metadata: {} })];
         await assert.rejects(
             () => getOrCreateVectorStore(docs, new MockEmbeddings(), { inMemory: false }),
-            /indexPath is required/
+            (err) => {
+                assert.ok(err instanceof VectorStoreError);
+                assert.equal(err.code, 'VECTOR_STORE_ERROR');
+                return true;
+            }
         );
+    });
+});
+
+describe('rag.js - createRagChain() and loadAndIndexDocument()', () => {
+    it('createRagChain() should construct executable retrieval chain', async () => {
+        const mockModel = createMockChatModel('Direct chain answer');
+        const docs = [new Document({ pageContent: 'Chain test chunk', metadata: {} })];
+        const vectorStore = await getOrCreateVectorStore(docs, new MockEmbeddings(), { inMemory: true });
+
+        const chain = await createRagChain({
+            llm: mockModel,
+            vectorStore,
+            k: 1
+        });
+
+        assert.ok(chain);
+        const res = await chain.invoke({ input: 'Query test' });
+        assert.equal(res.answer, 'Direct chain answer');
+    });
+
+    it('loadAndIndexDocument() should index file chunks to disk destination', async () => {
+        const tempIndexDir = path.join(__dirname, 'temp_index_unit_test');
+        const tempDoc = path.join(tempIndexDir, 'sample.txt');
+
+        if (!fs.existsSync(tempIndexDir)) {
+            fs.mkdirSync(tempIndexDir, { recursive: true });
+        }
+        fs.writeFileSync(tempDoc, 'Content for indexing test verification.');
+
+        const res = await loadAndIndexDocument(tempDoc, {
+            embeddings: new MockEmbeddings(),
+            vectorBaseDir: tempIndexDir
+        });
+
+        assert.ok(res.indexPath);
+        assert.equal(res.chunkCount, 1);
+        assert.ok(fs.existsSync(path.join(res.indexPath, 'docstore.json')));
+
+        if (fs.existsSync(tempIndexDir)) {
+            fs.rmSync(tempIndexDir, { recursive: true, force: true });
+        }
     });
 });
 
@@ -241,11 +346,11 @@ describe('rag.js - End-to-End Pipeline & documentRag()', () => {
     });
 
     it('documentRag() should validate docPath input', async () => {
-        await assert.rejects(() => documentRag(''), TypeError);
-        await assert.rejects(() => documentRag(null), TypeError);
+        await assert.rejects(() => documentRag(''), ValidationError);
+        await assert.rejects(() => documentRag(null), ValidationError);
         await assert.rejects(
             () => documentRag('nonexistent_e2e_doc.txt'),
-            /Target document not found/
+            DocumentNotFoundError
         );
     });
 
