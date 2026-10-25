@@ -6,53 +6,6 @@ A modular, robust, and well-tested Retrieval-Augmented Generation (RAG) system b
 
 ## Architecture Overview
 
-```
-                      +-----------------------------+
-                      |   Target Document (.pdf,    |
-                      |   .docx, .txt, .md)         |
-                      +--------------+--------------+
-                                     |
-                                     v
-                      +-----------------------------+
-                      | getLoaderForDocument()      |
-                      | PDFLoader / Docx / Text     |
-                      +--------------+--------------+
-                                     |
-                                     v
-                      +-----------------------------+
-                      | loadAndSplitDocument()      |
-                      | RecursiveCharacterSplitter  |
-                      +--------------+--------------+
-                                     |
-               +---------------------+---------------------+
-               |                                           |
-     (Cached on Disk?)                           (First Time Indexing)
-               |                                           |
-               v                                           v
-      +-----------------+                         +-----------------+
-      | HNSWLib.load()  |                         | HNSWLib.fromDocs|
-      | from ./vector/  |                         | & save to disk  |
-      +--------+--------+                         +--------+--------+
-               |                                           |
-               +---------------------+---------------------+
-                                     |
-                                     v
-                      +-----------------------------+
-                      |   HNSWLib Vector Retriever  |
-                      +--------------+--------------+
-                                     | (Top-k context chunks)
-                                     v
-                      +-----------------------------+
-                      | createStuffDocumentsChain   |
-                      | ChatGoogleGenerativeAI (LLM)|
-                      +--------------+--------------+
-                                     |
-                                     v
-                      +-----------------------------+
-                      |       Synthesized Answer    |
-                      |     with Source Context     |
-                      +-----------------------------+
-```
 
 ---
 
@@ -65,26 +18,6 @@ A modular, robust, and well-tested Retrieval-Augmented Generation (RAG) system b
 - **Zero Side-Effects on Import**: Safe to require in other projects, scripts, or test runners without triggering unprompted LLM calls or disk writes.
 - **Production Quality**: Built with strict parameter validation, cross-platform path handling (POSIX & Windows), JSDoc types, and a comprehensive test suite.
 
----
-
-## Project Structure
-
-```
-simplerag/
-├── files/                       # Sample documents (.pdf, .docx, etc.)
-├── vector/                      # Persisted HNSWLib vector indices
-│   └── vector-db/
-├── tests/                       # Comprehensive test suites
-│   ├── morerag.test.js          # Unit tests for path & multi-doc utils
-│   └── rag.test.js              # Unit and integration tests for RAG pipeline
-├── .env.example                 # Environment variables template
-├── morerag.js                   # Document path utilities & multi-doc operations
-├── package.json                 # Project dependencies and npm scripts
-├── rag.js                       # Core RAG pipeline & CLI runner
-└── README.md                    # Project documentation
-```
-
----
 
 ## Installation & Setup
 
@@ -210,21 +143,3 @@ The test suite uses Node.js's native test runner (`node:test` and `node:assert/s
 Run all tests:
 ```bash
 npm test
-```
-
-Sample test output:
-```
-✔ morerag.js - File & Path Utilities (34.6ms)
-✔ morerag.js - Multi-Document RAG Operations (12.7ms)
-✔ rag.js - Configuration and Defaults (2.8ms)
-✔ rag.js - Document Loader Resolution (15.0ms)
-✔ rag.js - Text Splitting and Chunking (32.0ms)
-✔ rag.js - Embeddings and LLM Configuration (1.3ms)
-✔ rag.js - Vector Store Caching and Storage (7.9ms)
-✔ rag.js - End-to-End Pipeline & documentRag() (40.1ms)
-
-ℹ tests 42
-ℹ suites 17
-ℹ pass 42
-ℹ fail 0
-```
