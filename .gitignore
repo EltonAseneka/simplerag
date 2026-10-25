@@ -1,4 +1,7 @@
 node_modules
 .env
+coverage
+.nyc_output
+temp_*
 ignore.txt
 README copy.md
