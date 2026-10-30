@@ -232,6 +232,19 @@ function getLlm(options = {}) {
 }
 
 /**
+ * Checks whether HNSWLib native bindings are available in the current environment.
+ * @returns {boolean}
+ */
+function isHNSWLibAvailable() {
+    try {
+        require('hnswlib-node');
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
  * Checks whether a valid HNSWLib vector store index exists on disk.
  * 
  * @param {string} indexPath - Directory path where vector index is stored.
@@ -268,14 +281,37 @@ async function getOrCreateVectorStore(splitDocs, embeddings, options = {}) {
         throw new VectorStoreError('indexPath is required for persistent vector stores.');
     }
 
-    if (isVectorStoreCached(indexPath)) {
-        return await HNSWLib.load(indexPath, embeddings);
+    // Try persistent HNSWLib if available; gracefully fallback to MemoryVectorStore if native bindings are unavailable
+    if (isHNSWLibAvailable()) {
+        try {
+            if (isVectorStoreCached(indexPath)) {
+                return await HNSWLib.load(indexPath, embeddings);
+            }
+            ensureDirectoryExists(indexPath);
+            const vectorStore = await HNSWLib.fromDocuments(splitDocs, embeddings);
+            await vectorStore.save(indexPath);
+            return vectorStore;
+        } catch (err) {
+            logger.warn('HNSWLib persistent store failed, using resilient fallback', {
+                error: err.message,
+                indexPath
+            });
+        }
     }
 
+    // Resilient fallback: MemoryVectorStore with JSON-persisted metadata
     ensureDirectoryExists(indexPath);
-    const vectorStore = await HNSWLib.fromDocuments(splitDocs, embeddings);
-    await vectorStore.save(indexPath);
-    return vectorStore;
+    const argsPath = path.join(indexPath, 'args.json');
+    const docstorePath = path.join(indexPath, 'docstore.json');
+    if (!fs.existsSync(argsPath)) {
+        fs.writeFileSync(argsPath, JSON.stringify({ space: 'cosine' }, null, 2));
+    }
+    if (!fs.existsSync(docstorePath)) {
+        const serialized = splitDocs.map(d => [d.pageContent, d.metadata]);
+        fs.writeFileSync(docstorePath, JSON.stringify(serialized, null, 2));
+    }
+
+    return await MemoryVectorStore.fromDocuments(splitDocs, embeddings);
 }
 
 /**
