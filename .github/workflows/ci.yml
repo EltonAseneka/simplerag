@@ -27,12 +27,7 @@ jobs:
         run: npm run lint
 
       - name: Run Test Suite
-        run: |
-          if ! npm test; then
-            ERRS=$(npm test 2>&1 | grep -C 3 -E "(not ok|ERR_|AssertionError|Error:)" | head -c 1000 | tr '\r\n' ' ')
-            echo "::error title=FailureCause::$ERRS"
-            exit 1
-          fi
+        run: npm test
 
       - name: Check Coverage Thresholds (>=70%)
         run: npm run check-coverage

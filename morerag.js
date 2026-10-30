@@ -20,6 +20,7 @@ const SUPPORTED_EXTENSIONS = Object.freeze(['pdf', 'docx', 'txt', 'md']);
 
 /**
  * Extracts the file extension in normalized, lowercase form without the leading dot.
+ * Works consistently across both Windows and POSIX paths.
  * 
  * @param {string} filePath - Path or filename to inspect.
  * @returns {string} Lowercase extension (e.g., 'pdf', 'docx') or empty string if none.
@@ -33,7 +34,10 @@ function getFileExtension(filePath) {
     if (!filePath || typeof filePath !== 'string') {
         return '';
     }
-    const ext = path.extname(filePath.trim());
+    const clean = filePath.trim();
+    if (!clean) return '';
+    const filename = clean.split(/[\\/]/).filter(Boolean).pop() || '';
+    const ext = path.extname(filename);
     return ext ? ext.replace(/^\./, '').toLowerCase() : '';
 }
 
@@ -57,7 +61,7 @@ function isSupportedFileType(filePath, allowed = SUPPORTED_EXTENSIONS) {
 
 /**
  * Extracts a safe, cross-platform base filename without directory path or extension.
- * Handles both POSIX and Windows separators.
+ * Correctly handles both POSIX (/) and Windows (\) separators regardless of the host OS.
  * 
  * @param {string} filePath - Full or relative file path.
  * @returns {string} Clean base filename without extension.
@@ -72,9 +76,11 @@ function getSafeBasename(filePath) {
     if (!filePath || typeof filePath !== 'string') {
         return '';
     }
-    const normalized = path.normalize(filePath.trim());
-    const ext = path.extname(normalized);
-    return path.basename(normalized, ext);
+    const cleanPath = filePath.trim();
+    if (!cleanPath) return '';
+    const filename = cleanPath.split(/[\\/]/).filter(Boolean).pop() || '';
+    const ext = path.extname(filename);
+    return filename.slice(0, filename.length - ext.length);
 }
 
 /**
