@@ -27,7 +27,12 @@ jobs:
         run: npm run lint
 
       - name: Run Test Suite
-        run: npm test
+        run: |
+          if ! npm test; then
+            OUTPUT=$(npm test 2>&1 | tr '\r\n' ' ')
+            echo "::error title=TestSuiteFailed::$OUTPUT"
+            exit 1
+          fi
 
       - name: Check Coverage Thresholds (>=70%)
         run: npm run check-coverage
