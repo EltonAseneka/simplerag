@@ -4,9 +4,9 @@
   "description": "Production-grade Document Retrieval-Augmented Generation (RAG) with LangChain and Node.js",
   "main": "rag.js",
   "scripts": {
-    "test": "node --require ./tests/setup.js --test tests/*.test.js",
-    "test:coverage": "c8 --reporter=text --reporter=lcov node --require ./tests/setup.js --test tests/*.test.js",
-    "check-coverage": "c8 --check-coverage --lines 70 --functions 70 --branches 65 node --require ./tests/setup.js --test tests/*.test.js",
+    "test": "node --require ./tests/setup.js --test",
+    "test:coverage": "c8 --reporter=text --reporter=lcov node --require ./tests/setup.js --test",
+    "check-coverage": "c8 --check-coverage --lines 70 --functions 70 --branches 65 node --require ./tests/setup.js --test",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "start": "node rag.js",
