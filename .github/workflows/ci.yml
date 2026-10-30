@@ -29,8 +29,8 @@ jobs:
       - name: Run Test Suite
         run: |
           if ! npm test; then
-            OUTPUT=$(npm test 2>&1 | tr '\r\n' ' ')
-            echo "::error title=TestSuiteFailed::$OUTPUT"
+            ERRS=$(npm test 2>&1 | grep -C 3 -E "(not ok|ERR_|AssertionError|Error:)" | head -c 1000 | tr '\r\n' ' ')
+            echo "::error title=FailureCause::$ERRS"
             exit 1
           fi
 
